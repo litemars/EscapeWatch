@@ -1,0 +1,52 @@
+
+======================================================================
+  EscapeWatch — Container Escape Risk Assessment
+======================================================================
+
+  Context:      Docker container
+  Kernel:       5.15.0-91-generic
+  Hostname:     vulnerable-container
+  cgroup:       v2
+  Init:         bash
+
+  Risk Score: 109  Grade: F  Findings: 6
+
+----------------------------------------------------------------------
+  [!!] EW-PRIV-001 — Privileged container detected
+     Severity: critical  Confidence: high  Score: 40
+     Evidence: CapEff=0000003fffffffff (all capabilities)
+     Impact: A privileged container has full access to host devices and can trivially escape to the host.
+     Fix: Remove --privileged flag. Grant only the specific capabilities needed with --cap-add.
+     Ref: https://docs.docker.com/engine/reference/run/#runtime-privilege-and-linux-capabilities
+
+  [!!] EW-FS-001 — Docker socket exposed
+     Severity: critical  Confidence: high  Score: 40
+     Evidence: Socket found: /var/run/docker.sock
+     Impact: Access to the Docker socket allows full control over the container runtime, enabling container escape and host compromise.
+     Fix: Remove the socket mount. If API access is needed, use a read-only proxy like docker-socket-proxy.
+     Ref: https://cheatsheetseries.owasp.org/cheatsheets/Docker_Security_Cheat_Sheet.html
+
+  [!]  EW-PRIV-004 — Seccomp disabled
+     Severity: high  Confidence: high  Score: 20
+     Evidence: Seccomp mode: 0 (disabled)
+     Impact: Without seccomp filtering, the container can invoke any syscall, greatly increasing the kernel attack surface.
+     Fix: Use the default Docker seccomp profile or apply a custom profile with --security-opt seccomp=<profile>.
+     Ref: https://docs.docker.com/engine/security/seccomp/
+
+  [~]  EW-SECRET-001 — Sensitive environment variables detected (3)
+     Severity: medium  Confidence: medium  Score: 7
+     Evidence: DB_PASSWORD=se***REDACTED***rd; API_TOKEN=ab***REDACTED***ef
+     Impact: Secrets in environment variables are visible to any process in the container and may leak through logs or debug endpoints.
+     Fix: Use mounted secrets files or a secrets manager instead of environment variables for sensitive data.
+
+  [.]  EW-PRIV-009 — no_new_privs not set
+     Severity: low  Confidence: medium  Score: 2
+     Evidence: NoNewPrivs: 0
+     Impact: Without no_new_privs, processes can gain additional privileges through setuid binaries or capability-aware programs.
+     Fix: Set --security-opt no-new-privileges:true in Docker.
+
+  [i]  EW-K8S-003 — Kubernetes API server reachable
+     Severity: info  Confidence: high  Score: 0
+     Evidence: API server at 10.96.0.1:443 is reachable
+     Impact: API server reachability combined with a service account token means the pod can interact with the Kubernetes API.
+     Fix: Use NetworkPolicy to restrict API server access from pods that don't need it.

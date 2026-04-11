@@ -1,0 +1,133 @@
+{
+  "version": "0.1.0",
+  "environment": {
+    "is_container": true,
+    "is_docker": true,
+    "is_kubernetes": false,
+    "is_containerd": false,
+    "is_host": false,
+    "is_rootless": false,
+    "kernel_version": "5.15.0-91-generic",
+    "cgroup_version": "v2",
+    "init_process": "bash",
+    "hostname": "vulnerable-container",
+    "container_id": "a1b2c3d4e5f67890a1b2c3d4e5f67890a1b2c3d4e5f67890a1b2c3d4e5f67890",
+    "runtime_hints": [
+      "/.dockerenv exists",
+      "docker found in /proc/1/cgroup"
+    ],
+    "namespace_ids": {
+      "pid": "pid:[4026532456]",
+      "net": "net:[4026532520]",
+      "mnt": "mnt:[4026532457]"
+    }
+  },
+  "summary": {
+    "total_score": 109.1,
+    "grade": "F",
+    "finding_count": 6,
+    "max_severity": "critical",
+    "categories": {
+      "runtime-privileges": {
+        "total_score": 62.1,
+        "finding_count": 3
+      },
+      "filesystem-mounts": {
+        "total_score": 40.0,
+        "finding_count": 1
+      },
+      "secrets-exposure": {
+        "total_score": 7.0,
+        "finding_count": 1
+      },
+      "kubernetes": {
+        "total_score": 0.0,
+        "finding_count": 1
+      }
+    }
+  },
+  "findings": [
+    {
+      "id": "EW-PRIV-001",
+      "title": "Privileged container detected",
+      "severity": "critical",
+      "confidence": "high",
+      "category": "runtime-privileges",
+      "evidence": "CapEff=0000003fffffffff (all capabilities)",
+      "why_it_matters": "A privileged container has full access to host devices and can trivially escape to the host.",
+      "remediation": "Remove --privileged flag. Grant only the specific capabilities needed with --cap-add.",
+      "references": [
+        "https://docs.docker.com/engine/reference/run/#runtime-privilege-and-linux-capabilities"
+      ],
+      "weighted_score": 40.0
+    },
+    {
+      "id": "EW-FS-001",
+      "title": "Docker socket exposed",
+      "severity": "critical",
+      "confidence": "high",
+      "category": "filesystem-mounts",
+      "evidence": "Socket found: /var/run/docker.sock",
+      "why_it_matters": "Access to the Docker socket allows full control over the container runtime, enabling container escape and host compromise.",
+      "remediation": "Remove the socket mount. If API access is needed, use a read-only proxy like docker-socket-proxy.",
+      "references": [
+        "https://cheatsheetseries.owasp.org/cheatsheets/Docker_Security_Cheat_Sheet.html"
+      ],
+      "weighted_score": 40.0
+    },
+    {
+      "id": "EW-PRIV-004",
+      "title": "Seccomp disabled",
+      "severity": "high",
+      "confidence": "high",
+      "category": "runtime-privileges",
+      "evidence": "Seccomp mode: 0 (disabled)",
+      "why_it_matters": "Without seccomp filtering, the container can invoke any syscall, greatly increasing the kernel attack surface.",
+      "remediation": "Use the default Docker seccomp profile or apply a custom profile with --security-opt seccomp=<profile>.",
+      "references": [
+        "https://docs.docker.com/engine/security/seccomp/"
+      ],
+      "weighted_score": 20.0
+    },
+    {
+      "id": "EW-SECRET-001",
+      "title": "Sensitive environment variables detected (3)",
+      "severity": "medium",
+      "confidence": "medium",
+      "category": "secrets-exposure",
+      "evidence": "DB_PASSWORD=se***REDACTED***rd; API_TOKEN=ab***REDACTED***ef; AWS_SECRET_ACCESS_KEY=wJ***REDACTED***Q=",
+      "why_it_matters": "Secrets in environment variables are visible to any process in the container and may leak through logs or debug endpoints.",
+      "remediation": "Use mounted secrets files or a secrets manager instead of environment variables for sensitive data.",
+      "references": [
+        "https://kubernetes.io/docs/concepts/configuration/secret/"
+      ],
+      "weighted_score": 7.0
+    },
+    {
+      "id": "EW-PRIV-009",
+      "title": "no_new_privs not set",
+      "severity": "low",
+      "confidence": "medium",
+      "category": "runtime-privileges",
+      "evidence": "NoNewPrivs: 0",
+      "why_it_matters": "Without no_new_privs, processes can gain additional privileges through setuid binaries or capability-aware programs.",
+      "remediation": "Set --security-opt no-new-privileges:true in Docker.",
+      "references": [
+        "https://docs.docker.com/engine/reference/run/#security-configuration"
+      ],
+      "weighted_score": 2.1
+    },
+    {
+      "id": "EW-K8S-003",
+      "title": "Kubernetes API server reachable",
+      "severity": "info",
+      "confidence": "high",
+      "category": "kubernetes",
+      "evidence": "API server at 10.96.0.1:443 is reachable",
+      "why_it_matters": "API server reachability combined with a service account token means the pod can interact with the Kubernetes API.",
+      "remediation": "Use NetworkPolicy to restrict API server access from pods that don't need it.",
+      "references": [],
+      "weighted_score": 0.0
+    }
+  ]
+}

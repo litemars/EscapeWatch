@@ -1,0 +1,154 @@
+{
+  "$schema": "https://docs.oasis-open.org/sarif/sarif/v2.1.0/errata01/os/schemas/sarif-schema-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "escapewatch",
+          "version": "0.1.0",
+          "informationUri": "https://github.com/escapewatch/escapewatch",
+          "rules": [
+            {
+              "id": "EW-PRIV-001",
+              "name": "Privileged container detected",
+              "shortDescription": {
+                "text": "Privileged container detected"
+              },
+              "fullDescription": {
+                "text": "A privileged container has full access to host devices and can trivially escape to the host."
+              },
+              "helpUri": "https://docs.docker.com/engine/reference/run/#runtime-privilege-and-linux-capabilities",
+              "help": {
+                "text": "Remove --privileged flag. Grant only the specific capabilities needed with --cap-add.",
+                "markdown": "**Remediation:** Remove --privileged flag. Grant only the specific capabilities needed with --cap-add."
+              },
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "properties": {
+                "tags": [
+                  "runtime-privileges"
+                ],
+                "severity": "critical",
+                "confidence": "high"
+              }
+            },
+            {
+              "id": "EW-FS-001",
+              "name": "Docker socket exposed",
+              "shortDescription": {
+                "text": "Docker socket exposed"
+              },
+              "fullDescription": {
+                "text": "Access to the Docker socket allows full control over the container runtime, enabling container escape and host compromise."
+              },
+              "helpUri": "https://cheatsheetseries.owasp.org/cheatsheets/Docker_Security_Cheat_Sheet.html",
+              "help": {
+                "text": "Remove the socket mount. If API access is needed, use a read-only proxy like docker-socket-proxy.",
+                "markdown": "**Remediation:** Remove the socket mount. If API access is needed, use a read-only proxy like docker-socket-proxy."
+              },
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "properties": {
+                "tags": [
+                  "filesystem-mounts"
+                ],
+                "severity": "critical",
+                "confidence": "high"
+              }
+            },
+            {
+              "id": "EW-PRIV-004",
+              "name": "Seccomp disabled",
+              "shortDescription": {
+                "text": "Seccomp disabled"
+              },
+              "fullDescription": {
+                "text": "Without seccomp filtering, the container can invoke any syscall, greatly increasing the kernel attack surface."
+              },
+              "helpUri": "https://docs.docker.com/engine/security/seccomp/",
+              "help": {
+                "text": "Use the default Docker seccomp profile or apply a custom profile with --security-opt seccomp=<profile>.",
+                "markdown": "**Remediation:** Use the default Docker seccomp profile or apply a custom profile with --security-opt seccomp=<profile>."
+              },
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "properties": {
+                "tags": [
+                  "runtime-privileges"
+                ],
+                "severity": "high",
+                "confidence": "high"
+              }
+            }
+          ]
+        }
+      },
+      "results": [
+        {
+          "ruleId": "EW-PRIV-001",
+          "level": "error",
+          "message": {
+            "text": "CapEff=0000003fffffffff (all capabilities)"
+          },
+          "properties": {
+            "severity": "critical",
+            "confidence": "high",
+            "category": "runtime-privileges",
+            "weightedScore": 40.0,
+            "remediation": "Remove --privileged flag. Grant only the specific capabilities needed with --cap-add."
+          }
+        },
+        {
+          "ruleId": "EW-FS-001",
+          "level": "error",
+          "message": {
+            "text": "Socket found: /var/run/docker.sock"
+          },
+          "properties": {
+            "severity": "critical",
+            "confidence": "high",
+            "category": "filesystem-mounts",
+            "weightedScore": 40.0,
+            "remediation": "Remove the socket mount. If API access is needed, use a read-only proxy like docker-socket-proxy."
+          }
+        },
+        {
+          "ruleId": "EW-PRIV-004",
+          "level": "error",
+          "message": {
+            "text": "Seccomp mode: 0 (disabled)"
+          },
+          "properties": {
+            "severity": "high",
+            "confidence": "high",
+            "category": "runtime-privileges",
+            "weightedScore": 20.0,
+            "remediation": "Use the default Docker seccomp profile or apply a custom profile with --security-opt seccomp=<profile>."
+          }
+        }
+      ],
+      "invocations": [
+        {
+          "executionSuccessful": true,
+          "properties": {
+            "environment": {
+              "is_container": true,
+              "is_docker": true,
+              "is_kubernetes": false,
+              "kernel_version": "5.15.0-91-generic"
+            },
+            "summary": {
+              "totalScore": 109.1,
+              "grade": "F",
+              "findingCount": 6
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,339 @@
+from __future__ import annotations
+
+import os
+import re
+from pathlib import Path
+
+from escapewatch.checks.base import BaseCheck, register_check
+from escapewatch.models import Category, Confidence, Finding, Severity
+
+# Linux capabilities that are considered dangerous for container escape
+DANGEROUS_CAPS = {
+    "cap_sys_admin": "Broad admin access — mount, namespace, bpf, and more",
+    "cap_sys_ptrace": "Trace/inspect any process — can read secrets from memory",
+    "cap_sys_module": "Load kernel modules — direct kernel code execution",
+    "cap_sys_rawio": "Raw I/O access — can modify kernel memory via /dev/mem",
+    "cap_net_admin": "Full network config — can sniff traffic and modify routing",
+    "cap_net_raw": "Raw sockets — can craft arbitrary packets",
+    "cap_dac_override": "Bypass file permission checks — read/write any file",
+    "cap_dac_read_search": "Bypass file read permissions",
+    "cap_fowner": "Bypass permission checks on file owner operations",
+    "cap_setuid": "Set arbitrary UIDs — privilege escalation",
+    "cap_setgid": "Set arbitrary GIDs — privilege escalation",
+    "cap_sys_chroot": "Change root directory — container escape aid",
+    "cap_mknod": "Create device special files",
+    "cap_sys_boot": "Reboot the system",
+    "cap_syslog": "Access kernel logs — information disclosure",
+    "cap_bpf": "eBPF programs — kernel-level observation and manipulation",
+    "cap_perfmon": "Performance monitoring — kernel information disclosure",
+}
+
+# Subset that are especially critical
+CRITICAL_CAPS = {"cap_sys_admin", "cap_sys_module", "cap_sys_rawio", "cap_sys_ptrace"}
+
+
+def parse_cap_hex(hex_str: str) -> set[str]:
+    """Convert a hex capability bitmask to a set of capability names."""
+    cap_names = [
+        "cap_chown", "cap_dac_override", "cap_dac_read_search", "cap_fowner",
+        "cap_fsetid", "cap_kill", "cap_setgid", "cap_setuid",
+        "cap_setpcap", "cap_linux_immutable", "cap_net_bind_service", "cap_net_broadcast",
+        "cap_net_admin", "cap_net_raw", "cap_ipc_lock", "cap_ipc_owner",
+        "cap_sys_module", "cap_sys_rawio", "cap_sys_chroot", "cap_sys_ptrace",
+        "cap_sys_pacct", "cap_sys_admin", "cap_sys_boot", "cap_sys_nice",
+        "cap_sys_resource", "cap_sys_time", "cap_sys_tty_config", "cap_mknod",
+        "cap_lease", "cap_audit_write", "cap_audit_control", "cap_setfcap",
+        "cap_mac_override", "cap_mac_admin", "cap_syslog", "cap_wake_alarm",
+        "cap_block_suspend", "cap_audit_read", "cap_perfmon", "cap_bpf",
+        "cap_checkpoint_restore",
+    ]
+    try:
+        bitmask = int(hex_str.strip(), 16)
+    except ValueError:
+        return set()
+    result = set()
+    for i, name in enumerate(cap_names):
+        if bitmask & (1 << i):
+            result.add(name)
+    return result
+
+
+@register_check
+class PrivilegedContainerCheck(BaseCheck):
+    """Detect if the container is running in privileged mode."""
+
+    name = "privileged-container"
+    description = "Checks for privileged container indicators"
+    category = Category.PRIVILEGES
+
+    def run(self) -> list[Finding]:
+        findings: list[Finding] = []
+
+        # Read effective capabilities
+        status = self._read_file("/proc/1/status")
+        if status:
+            match = re.search(r"CapEff:\s+([0-9a-fA-F]+)", status)
+            if match:
+                caps = parse_cap_hex(match.group(1))
+                # Full caps = privileged. CAP_LAST_CAP is 40 on kernels
+                # ≤ 6.3 (41 bits) but may grow. Check whether *all* known
+                # capability bits are set — any value where at least the
+                # first 41 bits are on is considered "all capabilities".
+                try:
+                    eff_val = int(match.group(1).strip(), 16)
+                except ValueError:
+                    eff_val = 0
+
+                all_cap_bits = (1 << 41) - 1  # bits 0-40
+                if eff_val & all_cap_bits == all_cap_bits:
+                    findings.append(Finding(
+                        id="EW-PRIV-001",
+                        title="Privileged container detected",
+                        severity=Severity.CRITICAL,
+                        confidence=Confidence.HIGH,
+                        category=Category.PRIVILEGES,
+                        evidence=f"CapEff={match.group(1).strip()} (all capabilities)",
+                        why_it_matters=(
+                            "A privileged container has full access to host devices "
+                            "and can trivially escape to the host."
+                        ),
+                        remediation=(
+                            "Remove --privileged flag. Grant only the specific "
+                            "capabilities needed with --cap-add."
+                        ),
+                        references=[
+                            "https://docs.docker.com/engine/reference/run/#runtime-privilege-and-linux-capabilities",
+                        ],
+                    ))
+                else:
+                    # Check for dangerous individual caps
+                    dangerous_found = caps & set(DANGEROUS_CAPS.keys())
+                    critical_found = dangerous_found & CRITICAL_CAPS
+                    if critical_found:
+                        findings.append(Finding(
+                            id="EW-PRIV-002",
+                            title="Critical Linux capabilities granted",
+                            severity=Severity.HIGH,
+                            confidence=Confidence.HIGH,
+                            category=Category.PRIVILEGES,
+                            evidence=f"Critical caps: {', '.join(sorted(critical_found))}",
+                            why_it_matters=(
+                                "These capabilities can enable container escape or "
+                                "host compromise."
+                            ),
+                            remediation="Drop unnecessary capabilities with --cap-drop ALL --cap-add <needed>.",
+                            references=[
+                                "https://man7.org/linux/man-pages/man7/capabilities.7.html",
+                            ],
+                        ))
+                    non_critical_dangerous = dangerous_found - CRITICAL_CAPS
+                    if non_critical_dangerous:
+                        findings.append(Finding(
+                            id="EW-PRIV-003",
+                            title="Dangerous Linux capabilities granted",
+                            severity=Severity.MEDIUM,
+                            confidence=Confidence.HIGH,
+                            category=Category.PRIVILEGES,
+                            evidence=f"Dangerous caps: {', '.join(sorted(non_critical_dangerous))}",
+                            why_it_matters=(
+                                "These capabilities expand the container's attack surface "
+                                "beyond the default set."
+                            ),
+                            remediation="Drop unnecessary capabilities with --cap-drop.",
+                            references=[
+                                "https://man7.org/linux/man-pages/man7/capabilities.7.html",
+                            ],
+                        ))
+
+        return findings
+
+
+@register_check
+class SeccompCheck(BaseCheck):
+    """Check if seccomp is disabled or unconfined."""
+
+    name = "seccomp-profile"
+    description = "Checks seccomp filtering status"
+    category = Category.PRIVILEGES
+
+    def run(self) -> list[Finding]:
+        findings: list[Finding] = []
+
+        status = self._read_file("/proc/1/status")
+        if status:
+            match = re.search(r"Seccomp:\s+(\d)", status)
+            if match:
+                mode = int(match.group(1))
+                if mode == 0:
+                    findings.append(Finding(
+                        id="EW-PRIV-004",
+                        title="Seccomp disabled",
+                        severity=Severity.HIGH,
+                        confidence=Confidence.HIGH,
+                        category=Category.PRIVILEGES,
+                        evidence="Seccomp mode: 0 (disabled)",
+                        why_it_matters=(
+                            "Without seccomp filtering, the container can invoke any "
+                            "syscall, greatly increasing the kernel attack surface."
+                        ),
+                        remediation=(
+                            "Use the default Docker seccomp profile or apply a custom "
+                            "profile with --security-opt seccomp=<profile>."
+                        ),
+                        references=[
+                            "https://docs.docker.com/engine/security/seccomp/",
+                        ],
+                    ))
+                elif mode == 1:
+                    findings.append(Finding(
+                        id="EW-PRIV-005",
+                        title="Seccomp in strict mode",
+                        severity=Severity.INFO,
+                        confidence=Confidence.HIGH,
+                        category=Category.PRIVILEGES,
+                        evidence="Seccomp mode: 1 (strict)",
+                        why_it_matters="Strict seccomp allows only read/write/exit/sigreturn.",
+                        remediation="No action needed — this is a very restricted profile.",
+                        references=[],
+                    ))
+                # mode 2 = filter — typically the default
+
+        return findings
+
+
+@register_check
+class AppArmorCheck(BaseCheck):
+    """Check AppArmor enforcement status."""
+
+    name = "apparmor-profile"
+    description = "Checks AppArmor profile enforcement"
+    category = Category.PRIVILEGES
+
+    def run(self) -> list[Finding]:
+        findings: list[Finding] = []
+
+        attr_path = "/proc/1/attr/current"
+        content = self._read_file(attr_path)
+        if content:
+            profile = content.strip().rstrip("\x00")
+            if profile in ("unconfined", ""):
+                findings.append(Finding(
+                    id="EW-PRIV-006",
+                    title="AppArmor unconfined",
+                    severity=Severity.MEDIUM,
+                    confidence=Confidence.MEDIUM,
+                    category=Category.PRIVILEGES,
+                    evidence=f"AppArmor profile: {profile or '(empty)'}",
+                    why_it_matters=(
+                        "Without an AppArmor profile, the container lacks mandatory "
+                        "access control restrictions on file and network operations."
+                    ),
+                    remediation="Apply the default Docker AppArmor profile or a custom profile.",
+                    references=[
+                        "https://docs.docker.com/engine/security/apparmor/",
+                    ],
+                ))
+
+        return findings
+
+
+@register_check
+class SELinuxCheck(BaseCheck):
+    """Check SELinux status indicators."""
+
+    name = "selinux-status"
+    description = "Checks SELinux enforcement indicators"
+    category = Category.PRIVILEGES
+
+    def run(self) -> list[Finding]:
+        findings: list[Finding] = []
+
+        selinux_path = "/sys/fs/selinux/enforce"
+        content = self._read_file(selinux_path)
+        if content is not None:
+            val = content.strip()
+            if val == "0":
+                findings.append(Finding(
+                    id="EW-PRIV-007",
+                    title="SELinux in permissive mode",
+                    severity=Severity.MEDIUM,
+                    confidence=Confidence.MEDIUM,
+                    category=Category.PRIVILEGES,
+                    evidence="SELinux enforce=0 (permissive)",
+                    why_it_matters=(
+                        "SELinux in permissive mode logs policy violations but does "
+                        "not enforce them, reducing defense-in-depth."
+                    ),
+                    remediation="Set SELinux to enforcing mode where supported.",
+                    references=[],
+                ))
+
+        return findings
+
+
+@register_check
+class RootUserCheck(BaseCheck):
+    """Check if running as root inside the container."""
+
+    name = "root-user"
+    description = "Checks if running as root (UID 0)"
+    category = Category.PRIVILEGES
+
+    def run(self) -> list[Finding]:
+        findings: list[Finding] = []
+
+        if os.getuid() == 0:
+            findings.append(Finding(
+                id="EW-PRIV-008",
+                title="Running as root (UID 0)",
+                severity=Severity.MEDIUM,
+                confidence=Confidence.HIGH,
+                category=Category.PRIVILEGES,
+                evidence=f"UID={os.getuid()}, GID={os.getgid()}",
+                why_it_matters=(
+                    "Running as root inside a container increases the impact of any "
+                    "escape vulnerability, as the attacker gains root on the host "
+                    "if user namespaces are not in use."
+                ),
+                remediation="Add a USER directive to the Dockerfile to run as non-root.",
+                references=[
+                    "https://docs.docker.com/develop/develop-images/dockerfile_best-practices/#user",
+                ],
+            ))
+
+        return findings
+
+
+@register_check
+class NoNewPrivilegesCheck(BaseCheck):
+    """Check if no_new_privs is set."""
+
+    name = "no-new-privileges"
+    description = "Checks no_new_privs flag"
+    category = Category.PRIVILEGES
+
+    def run(self) -> list[Finding]:
+        findings: list[Finding] = []
+
+        status = self._read_file("/proc/1/status")
+        if status:
+            match = re.search(r"NoNewPrivs:\s+(\d)", status)
+            if match and match.group(1) == "0":
+                findings.append(Finding(
+                    id="EW-PRIV-009",
+                    title="no_new_privs not set",
+                    severity=Severity.LOW,
+                    confidence=Confidence.MEDIUM,
+                    category=Category.PRIVILEGES,
+                    evidence="NoNewPrivs: 0",
+                    why_it_matters=(
+                        "Without no_new_privs, processes can gain additional privileges "
+                        "through setuid binaries or capability-aware programs."
+                    ),
+                    remediation="Set --security-opt no-new-privileges:true in Docker.",
+                    references=[
+                        "https://docs.docker.com/engine/reference/run/#security-configuration",
+                    ],
+                ))
+
+        return findings

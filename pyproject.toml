@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "escapewatch"
+version = "0.1.0"
+description = "Defensive container escape risk assessment framework"
+readme = "README.md"
+requires-python = ">=3.9"
+keywords = [
+    "container",
+    "security",
+    "docker",
+    "kubernetes",
+    "escape",
+    "assessment",
+    "defensive",
+]
+dependencies = [
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pyinstaller>=6.0",
+]
+
+[project.scripts]
+escapewatch = "escapewatch.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/litemars/escapewatch"
+Repository = "https://github.com/litemars/escapewatch"
+Issues = "https://github.com/litemars/escapewatch/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
