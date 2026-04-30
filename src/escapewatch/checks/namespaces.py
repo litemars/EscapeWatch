@@ -319,3 +319,116 @@ class HostIPCCheck(BaseCheck):
             pass
 
         return findings
+
+
+@register_check
+class HostUTSCheck(BaseCheck):
+    """Detect host UTS namespace sharing."""
+
+    name = "host-uts"
+    description = "Checks for host UTS namespace sharing"
+    category = Category.NAMESPACES
+
+    def run(self) -> list[Finding]:
+        findings: list[Finding] = []
+
+        uts_ns_1 = read_ns_inode(1, "uts")
+        uts_ns_2 = read_ns_inode(2, "uts")
+
+        if uts_ns_1 and uts_ns_2 and uts_ns_1 == uts_ns_2:
+            findings.append(Finding(
+                id="EW-NS-004",
+                title="Host UTS namespace shared",
+                severity=Severity.LOW,
+                confidence=Confidence.HIGH,
+                category=Category.NAMESPACES,
+                evidence=f"PID 1 uts ns ({uts_ns_1}) == PID 2/kthreadd uts ns",
+                why_it_matters=(
+                    "Sharing the host UTS namespace allows the container to read "
+                    "and modify the system hostname. Some security controls "
+                    "(audit systems, admission webhook selectors, node identity "
+                    "checks) rely on stable hostname values. Hostname manipulation "
+                    "can also assist in impersonating other nodes or services in "
+                    "log-aggregation systems."
+                ),
+                remediation=(
+                    "Set hostUTS: false (Kubernetes) or do not pass --uts=host (Docker)."
+                ),
+                references=[
+                    "https://kubernetes.io/docs/concepts/security/pod-security-standards/",
+                ],
+            ))
+
+        return findings
+
+
+@register_check
+class UserNamespaceAbsenceCheck(BaseCheck):
+    """Detect when user-namespace remapping is not in effect."""
+
+    name = "user-namespace-absence"
+    description = "Checks for user namespace remapping (container UID 0 != host UID 0)"
+    category = Category.NAMESPACES
+
+    def run(self) -> list[Finding]:
+        findings: list[Finding] = []
+
+        if os.getuid() != 0:
+            return findings
+
+        uid_map = None
+        try:
+            with open("/proc/1/uid_map") as f:
+                uid_map = f.read()
+        except OSError:
+            return findings
+
+        if not uid_map or not uid_map.strip():
+            return findings
+
+        first_line = uid_map.strip().splitlines()[0]
+        parts = first_line.split()
+        if len(parts) < 3:
+            return findings
+        try:
+            host_start = int(parts[1])
+            length = int(parts[2])
+        except ValueError:
+            return findings
+
+        if host_start == 0 and length == 4294967295:
+            findings.append(Finding(
+                id="EW-NS-005",
+                title="User namespace remapping not active",
+                severity=Severity.MEDIUM,
+                confidence=Confidence.HIGH,
+                category=Category.NAMESPACES,
+                evidence=(
+                    f"/proc/1/uid_map: '{uid_map.strip()}' — UID 0 inside container "
+                    "maps to UID 0 on host. User namespace remapping is not active. "
+                    "Container root = host root."
+                ),
+                why_it_matters=(
+                    "Without user namespace remapping, UID 0 inside the container "
+                    "is the same as UID 0 on the host kernel. Any container escape "
+                    "— via runc bug, kernel exploit, privileged socket, or cgroup "
+                    "release_agent — immediately yields host root with no further "
+                    "privilege escalation required. User namespaces (enabled by "
+                    "default in Kubernetes v1.33+) remap container UIDs to "
+                    "unprivileged host UIDs, providing a critical safety net that "
+                    "reduces the blast radius of any escape vulnerability."
+                ),
+                remediation=(
+                    "Enable Kubernetes user namespaces (hostUsers: false in pod "
+                    "spec, K8s >= 1.25). For Docker, use rootless mode "
+                    "(`dockerd-rootless-setuptool.sh install`) or userns-remap "
+                    "in daemon.json. Kubernetes v1.33 enables user namespaces by "
+                    "default."
+                ),
+                references=[
+                    "https://kubernetes.io/blog/2025/04/25/userns-enabled-by-default/",
+                    "https://www.wiz.io/blog/enhancing-kubernetes-security-with-user-namespaces",
+                ],
+            ))
+
+        return findings
