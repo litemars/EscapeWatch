@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import re
 import socket
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from escapewatch.checks.base import BaseCheck, register_check
@@ -55,30 +57,116 @@ class CloudMetadataCheck(BaseCheck):
                 result = sock.connect_ex((ip, 80))
                 sock.close()
 
-                if result == 0:
-                    findings.append(Finding(
-                        id="EW-CLOUD-001",
-                        title=f"Cloud metadata endpoint reachable: {ip}",
-                        severity=Severity.HIGH,
-                        confidence=Confidence.HIGH,
-                        category=Category.CLOUD,
-                        evidence=f"{desc} at {ip}:80 is reachable",
-                        why_it_matters=(
-                            "Cloud metadata endpoints can expose instance credentials, "
-                            "IAM roles, and sensitive configuration data."
-                        ),
-                        remediation=(
-                            "Block metadata endpoint access with network policies or "
-                            "use IMDSv2 (AWS) to require session tokens."
-                        ),
-                        references=[
-                            "https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/configuring-instance-metadata-service.html",
-                        ],
-                    ))
+                if result != 0:
+                    continue
+
+                imds_note = ""
+                if ip == "169.254.169.254":
+                    imds_status, imds_evidence = self._probe_aws_imds()
+                    if imds_status == "v1":
+                        imds_note = " (IMDSv1 active — credentials accessible without token)"
+                        findings.append(Finding(
+                            id="EW-CLOUD-002",
+                            title="AWS IMDSv1 active — credentials accessible without token",
+                            severity=Severity.CRITICAL,
+                            confidence=Confidence.HIGH,
+                            category=Category.CLOUD,
+                            evidence=imds_evidence,
+                            why_it_matters=(
+                                "IMDSv1 allows any process in the container — or any "
+                                "SSRF vulnerability in the workload — to retrieve IAM "
+                                "role credentials (access key, secret, session token) "
+                                "from the metadata service without authentication. "
+                                "These credentials can be used to authenticate to AWS "
+                                "APIs and escalate to full account compromise."
+                            ),
+                            remediation=(
+                                "Set HttpTokens=required on the EC2 instance metadata "
+                                "configuration (IMDSv2 only) via `aws ec2 "
+                                "modify-instance-metadata-options --instance-id <id> "
+                                "--http-tokens required`. In EKS, use the node group "
+                                "launch template or the IMDS hop limit."
+                            ),
+                            references=[
+                                "https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/configuring-instance-metadata-service.html",
+                            ],
+                        ))
+                    elif imds_status == "v2":
+                        imds_note = " (IMDSv2 enforced)"
+                        findings.append(Finding(
+                            id="EW-CLOUD-002",
+                            title="AWS IMDSv2 enforced",
+                            severity=Severity.INFO,
+                            confidence=Confidence.HIGH,
+                            category=Category.CLOUD,
+                            evidence=imds_evidence,
+                            why_it_matters=(
+                                "IMDSv2 enforcement requires session tokens for "
+                                "metadata access, mitigating SSRF-based credential "
+                                "theft."
+                            ),
+                            remediation="No action required — IMDSv2 is enforced.",
+                            references=[
+                                "https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/configuring-instance-metadata-service.html",
+                            ],
+                        ))
+
+                findings.append(Finding(
+                    id="EW-CLOUD-001",
+                    title=f"Cloud metadata endpoint reachable: {ip}",
+                    severity=Severity.HIGH,
+                    confidence=Confidence.HIGH,
+                    category=Category.CLOUD,
+                    evidence=f"{desc} at {ip}:80 is reachable{imds_note}",
+                    why_it_matters=(
+                        "Cloud metadata endpoints can expose instance credentials, "
+                        "IAM roles, and sensitive configuration data."
+                    ),
+                    remediation=(
+                        "Block metadata endpoint access with network policies or "
+                        "use IMDSv2 (AWS) to require session tokens."
+                    ),
+                    references=[
+                        "https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/configuring-instance-metadata-service.html",
+                    ],
+                ))
             except OSError:
                 pass
 
         return findings
+
+    @staticmethod
+    def _probe_aws_imds() -> tuple[str | None, str]:
+        """Send unauthenticated GET to IMDS. Returns (status, evidence).
+
+        status is "v1" if HTTP 200, "v2" if 401/403, None if probe failed.
+        """
+        url = "http://169.254.169.254/latest/meta-data/"
+        req = urllib.request.Request(url, method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                if resp.status == 200:
+                    return (
+                        "v1",
+                        "AWS IMDSv1 active: unauthenticated GET "
+                        "/latest/meta-data/ returned HTTP 200. IAM role "
+                        "credentials accessible without session token.",
+                    )
+                return (
+                    "v2",
+                    f"AWS IMDSv2 enforced: unauthenticated GET returned "
+                    f"HTTP {resp.status}. Session token required.",
+                )
+        except urllib.error.HTTPError as e:
+            if e.code in (401, 403):
+                return (
+                    "v2",
+                    f"AWS IMDSv2 enforced: unauthenticated GET returned "
+                    f"HTTP {e.code}. Session token required.",
+                )
+            return (None, "")
+        except (urllib.error.URLError, OSError, ValueError):
+            return (None, "")
 
 
 @register_check

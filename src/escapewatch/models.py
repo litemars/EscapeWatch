@@ -61,6 +61,9 @@ class Category(enum.Enum):
     CLOUD = "cloud-metadata"
     SOCKETS = "runtime-sockets"
     SECRETS = "secrets-exposure"
+    RUNTIME = "runtime-versions"
+    KERNEL = "kernel-vulns"
+    CHAIN = "attack-chains"
 
 
 @dataclass

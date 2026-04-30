@@ -13,6 +13,7 @@ SOCKET_SEARCH_DIRS = [
     "/var/run",
     "/run",
     "/tmp",
+    "/run/user",
 ]
 
 # Known runtime and management socket names
@@ -21,9 +22,19 @@ KNOWN_SOCKETS = {
     "dockershim.sock": ("Docker shim", Severity.CRITICAL),
     "containerd.sock": ("containerd", Severity.CRITICAL),
     "crio.sock": ("CRI-O", Severity.CRITICAL),
+    "podman.sock": ("Podman", Severity.CRITICAL),
     "frakti.sock": ("Frakti", Severity.HIGH),
     "kubelet": ("Kubelet", Severity.HIGH),
 }
+
+# Substrings in abstract socket names that indicate dangerous runtime APIs
+ABSTRACT_SOCKET_DANGEROUS = (
+    "containerd-shim",
+    "containerd",
+    "crio",
+    "dockerd",
+    "podman",
+)
 
 # Ports commonly associated with container runtime or management services
 DANGEROUS_PORTS = {
@@ -163,6 +174,74 @@ class DangerousPortsCheck(BaseCheck):
                     "Use authentication and TLS where supported."
                 ),
                 references=[],
+            ))
+
+        return findings
+
+
+@register_check
+class AbstractSocketCheck(BaseCheck):
+    """Detect dangerous abstract Unix domain sockets visible in this netns.
+
+    Abstract sockets are not filesystem-bound — they are accessible to any
+    process sharing the network namespace. A container running with
+    hostNetwork: true that can reach the containerd-shim API socket can be
+    used to escape via CVE-2020-15257.
+    """
+
+    name = "abstract-socket-scan"
+    description = "Scans /proc/net/unix for dangerous abstract sockets"
+    category = Category.SOCKETS
+
+    def run(self) -> list[Finding]:
+        findings: list[Finding] = []
+
+        content = self._read_file("/proc/net/unix")
+        if not content:
+            return findings
+
+        dangerous_found: list[str] = []
+        for line in content.splitlines()[1:]:
+            parts = line.split()
+            if len(parts) < 8:
+                continue
+            name = parts[7]
+            if not name:
+                continue
+            # Abstract sockets are encoded with a leading "@" by the kernel
+            # when read from /proc/net/unix.
+            if not name.startswith("@"):
+                continue
+            display = name
+            lowered = name.lower()
+            if any(token in lowered for token in ABSTRACT_SOCKET_DANGEROUS):
+                dangerous_found.append(display)
+
+        for sock_name in dangerous_found:
+            findings.append(Finding(
+                id="EW-SOCK-004",
+                title=f"Dangerous abstract Unix socket visible: {sock_name}",
+                severity=Severity.HIGH,
+                confidence=Confidence.MEDIUM,
+                category=Category.SOCKETS,
+                evidence=f"Abstract socket in /proc/net/unix: {sock_name}",
+                why_it_matters=(
+                    "Abstract Unix domain sockets are not visible as filesystem "
+                    "entries and are only accessible within the same network "
+                    "namespace. If the container shares the host network namespace "
+                    "(hostNetwork: true), it can connect to the containerd-shim API "
+                    "abstract socket and instruct the runtime to spawn arbitrary "
+                    "privileged containers (CVE-2020-15257)."
+                ),
+                remediation=(
+                    "Do not run containers with hostNetwork: true unless strictly "
+                    "required. Upgrade containerd to >= 1.3.9 / 1.4.3 which moved "
+                    "the shim socket to a path inaccessible to containers."
+                ),
+                references=[
+                    "https://www.sentinelone.com/vulnerability-database/cve-2020-15257/",
+                    "https://github.com/containerd/containerd/security/advisories/GHSA-36xw-fx78-c5r4",
+                ],
             ))
 
         return findings
