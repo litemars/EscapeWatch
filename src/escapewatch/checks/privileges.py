@@ -155,6 +155,65 @@ class PrivilegedContainerCheck(BaseCheck):
                             ],
                         ))
 
+            amb_match = re.search(r"CapAmb:\s+([0-9a-fA-F]+)", status)
+            if amb_match:
+                amb_hex = amb_match.group(1).strip()
+                try:
+                    amb_val = int(amb_hex, 16)
+                except ValueError:
+                    amb_val = 0
+                if amb_val != 0:
+                    amb_caps = parse_cap_hex(amb_hex)
+                    dangerous_amb = amb_caps & set(DANGEROUS_CAPS.keys())
+                    if dangerous_amb:
+                        findings.append(Finding(
+                            id="EW-PRIV-010",
+                            title="Dangerous ambient capabilities set",
+                            severity=Severity.MEDIUM,
+                            confidence=Confidence.HIGH,
+                            category=Category.PRIVILEGES,
+                            evidence=(
+                                f"CapAmb={amb_hex} — dangerous: "
+                                f"{', '.join(sorted(dangerous_amb))}"
+                            ),
+                            why_it_matters=(
+                                "Ambient capabilities are automatically inherited by child "
+                                "processes across execve() even for non-privileged "
+                                "executables (no SUID/file caps required). Any process "
+                                "spawned in this container inherits these capabilities, "
+                                "expanding the attack surface to all child processes."
+                            ),
+                            remediation=(
+                                "Remove ambient capabilities with `capsh --drop=cap_xxx` or "
+                                "ensure the container spec does not set ambientCapabilities. "
+                                "Use --cap-drop ALL in Docker."
+                            ),
+                            references=[
+                                "https://man7.org/linux/man-pages/man7/capabilities.7.html",
+                            ],
+                        ))
+                    else:
+                        findings.append(Finding(
+                            id="EW-PRIV-010",
+                            title="Non-zero ambient capabilities (non-dangerous set)",
+                            severity=Severity.LOW,
+                            confidence=Confidence.HIGH,
+                            category=Category.PRIVILEGES,
+                            evidence=(
+                                f"CapAmb={amb_hex} — caps: "
+                                f"{', '.join(sorted(amb_caps))}"
+                            ),
+                            why_it_matters=(
+                                "Non-dangerous ambient caps still expand child process "
+                                "privilege surface."
+                            ),
+                            remediation=(
+                                "Review whether ambient capabilities are required. Drop if "
+                                "not needed."
+                            ),
+                            references=[],
+                        ))
+
         return findings
 
 

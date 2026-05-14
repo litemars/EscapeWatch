@@ -16,6 +16,9 @@ import escapewatch.checks.namespaces  # noqa: F401
 import escapewatch.checks.kubernetes  # noqa: F401
 import escapewatch.checks.cloud  # noqa: F401
 import escapewatch.checks.sockets  # noqa: F401
+import escapewatch.checks.runtime_versions  # noqa: F401
+import escapewatch.checks.kernel  # noqa: F401
+import escapewatch.checks.chains  # noqa: F401
 
 
 def run_assessment(

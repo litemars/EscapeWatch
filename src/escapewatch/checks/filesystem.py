@@ -280,11 +280,44 @@ class WritableCgroupCheck(BaseCheck):
 
 @register_check
 class ProcSysWriteCheck(BaseCheck):
-    """Check for writable /proc/sys paths."""
+    """Check for writable /proc/sys paths and unsafe sysctl values."""
 
     name = "writable-proc-sys"
-    description = "Checks for writable /proc/sys entries"
+    description = "Checks for writable /proc/sys entries and unsafe sysctl values"
     category = Category.FILESYSTEM
+
+    DANGEROUS_VALUE_ENTRIES = {
+        "/proc/sys/kernel/unprivileged_bpf_disabled": {
+            "description": "Controls whether unprivileged users can load eBPF programs",
+            "dangerous_value": "0",
+            "severity": Severity.HIGH,
+            "attack": (
+                "Unprivileged eBPF programs can be used to exploit kernel "
+                "vulnerabilities or attach kprobes to spy on host processes. "
+                "CVE-2022-42150 used CAP_SYS_ADMIN but unprivileged eBPF opens "
+                "similar paths to kernel exploitation."
+            ),
+        },
+        "/proc/sys/kernel/perf_event_paranoid": {
+            "description": "Controls access to kernel perf counters",
+            "dangerous_value": "-1",
+            "severity": Severity.MEDIUM,
+            "attack": (
+                "Values <= 1 grant unprivileged access to hardware performance "
+                "counters, enabling cross-process data leakage (Spectre-class "
+                "side channels)."
+            ),
+        },
+        "/proc/sys/kernel/kptr_restrict": {
+            "description": "Controls kernel pointer exposure in /proc",
+            "dangerous_value": "0",
+            "severity": Severity.MEDIUM,
+            "attack": (
+                "Value 0 leaks kernel virtual addresses, bypassing KASLR and "
+                "providing gadget addresses needed for kernel ROP exploitation."
+            ),
+        },
+    }
 
     def run(self) -> list[Finding]:
         findings: list[Finding] = []
@@ -313,6 +346,92 @@ class ProcSysWriteCheck(BaseCheck):
                 remediation="Ensure /proc/sys is mounted read-only (default in modern runtimes).",
                 references=[],
             ))
+
+        for path, info in self.DANGEROUS_VALUE_ENTRIES.items():
+            content = self._read_file(path)
+            if content is None:
+                continue
+            current_value = content.strip()
+            if current_value != info["dangerous_value"]:
+                continue
+            findings.append(Finding(
+                id="EW-FS-005",
+                title=f"Unsafe sysctl value: {path} = {current_value}",
+                severity=info["severity"],
+                confidence=Confidence.HIGH,
+                category=Category.FILESYSTEM,
+                evidence=f"{path} = {current_value} ({info['description']})",
+                why_it_matters=info["attack"],
+                remediation=(
+                    f"Set a safer value for {path} via sysctl. Add to "
+                    "/etc/sysctl.conf and reload."
+                ),
+                references=[
+                    "https://www.kernel.org/doc/html/latest/admin-guide/sysctl/kernel.html",
+                ],
+            ))
+
+        return findings
+
+
+@register_check
+class ProcMemWriteCheck(BaseCheck):
+    """Detect writable /proc/<pid>/mem — direct host memory write primitive."""
+
+    name = "proc-mem-writable"
+    description = "Checks if /proc/1/mem is writable"
+    category = Category.FILESYSTEM
+
+    def run(self) -> list[Finding]:
+        findings: list[Finding] = []
+
+        path = "/proc/1/mem"
+        if not self._path_exists(path):
+            return findings
+
+        fd = None
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_NONBLOCK)
+        except (PermissionError, OSError):
+            return findings
+        finally:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+
+        findings.append(Finding(
+            id="EW-FS-011",
+            title="/proc/1/mem is writable — direct memory injection vector",
+            severity=Severity.CRITICAL,
+            confidence=Confidence.HIGH,
+            category=Category.FILESYSTEM,
+            evidence=(
+                "Opened /proc/1/mem with O_WRONLY successfully — direct host "
+                "process memory write is possible without ptrace syscall."
+            ),
+            why_it_matters=(
+                "Direct write access to /proc/<pid>/mem bypasses the ptrace "
+                "syscall entirely. While ptrace-based memory injection requires "
+                "CAP_SYS_PTRACE and can be blocked by seccomp rules that deny "
+                "ptrace(2), /proc/mem writes use only open(2) and write(2) — "
+                "syscalls allowed by most seccomp profiles including Docker's "
+                "default. An attacker with O_WRONLY access to /proc/1/mem can "
+                "inject shellcode into PID 1 (systemd, or the container's init) "
+                "and redirect execution, achieving privilege escalation or "
+                "escape without any capability requirements beyond the ability "
+                "to open the file."
+            ),
+            remediation=(
+                "Apply a seccomp profile that denies open(2) with O_WRONLY on "
+                "/proc/*/mem paths. Add an AppArmor rule: "
+                "`deny /proc/*/mem rwklx`. Ensure no_new_privs is set."
+            ),
+            references=[
+                "https://some-natalie.dev/container-escapes-ptrace/",
+            ],
+        ))
 
         return findings
 
@@ -444,6 +563,21 @@ class CgroupV1ReleaseAgentCheck(BaseCheck):
 
     def run(self) -> list[Finding]:
         findings: list[Finding] = []
+
+        # cgroup v2 (unified hierarchy) does not have release_agent — attack
+        # surface is gone. Emit an INFO finding confirming v2 protection.
+        if self._path_exists("/sys/fs/cgroup/cgroup.controllers"):
+            return [Finding(
+                id="EW-FS-008",
+                title="cgroup v2 in use — release_agent vector not applicable",
+                severity=Severity.INFO,
+                confidence=Confidence.HIGH,
+                category=Category.FILESYSTEM,
+                evidence="Detected /sys/fs/cgroup/cgroup.controllers (cgroup v2 unified hierarchy)",
+                why_it_matters="cgroup v2 does not support the release_agent escape path.",
+                remediation="No action required — cgroup v2 eliminates this attack vector.",
+                references=["https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html"],
+            )]
 
         release_agents = glob.glob("/sys/fs/cgroup/*/release_agent")
 

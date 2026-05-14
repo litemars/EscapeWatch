@@ -2,9 +2,9 @@
 
 **Defensive container escape risk assessment framework**
 
-EscapeWatch is a security assessment tool that detects container escape paths, dangerous runtime configurations, and hardening gaps in Docker, Kubernetes, and containerd environments. It produces reports with actionable remediation guidance.
+EscapeWatch is a security assessment tool that detects container escape paths, dangerous runtime configurations, and hardening gaps in Docker, Kubernetes and containerd environments. It produces reports with actionable remediation guidance.
 
-> **Safety:** EscapeWatch is a purely defensive tool. It performs read-only enumeration and risk scoring — it never attempts breakouts, delivers payloads, or compromises hosts.
+> **Safety:** EscapeWatch is a purely defensive tool. It performs read-only enumeration and risk scoring. It never attempts breakouts, delivers payloads or compromises hosts.
 
 ## Features
 

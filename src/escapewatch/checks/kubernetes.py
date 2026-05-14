@@ -200,10 +200,12 @@ class SelfSubjectRulesReviewCheck(BaseCheck):
     category = Category.KUBERNETES
 
     HIGHLY_SENSITIVE_RESOURCES = {
-        "secrets", "pods", "pods/exec", "pods/attach", "deployments",
-        "daemonsets", "statefulsets", "clusterrolebindings", "rolebindings",
-        "clusterroles", "roles", "serviceaccounts", "nodes", "nodes/proxy",
+        "secrets", "pods", "pods/exec", "pods/attach", "pods/ephemeralcontainers",
+        "deployments", "daemonsets", "statefulsets", "clusterrolebindings",
+        "rolebindings", "clusterroles", "roles", "serviceaccounts", "nodes",
+        "nodes/proxy",
     }
+    READ_DANGEROUS_RESOURCES = {"nodes/proxy", "nodes/log"}
     WRITE_VERBS = {"create", "update", "patch", "delete", "deletecollection", "*"}
     READ_VERBS = {"get", "list", "watch", "*"}
 
@@ -237,6 +239,9 @@ class SelfSubjectRulesReviewCheck(BaseCheck):
         sensitive_writes: list[str] = []
         can_create_pods = False
         can_read_secrets = False
+        nodes_proxy_access: list[str] = []
+        nodes_proxy_verbs: set[str] = set()
+        ephemeral_writes: list[str] = []
 
         for rule in resource_rules:
             verbs = set(rule.get("verbs", []) or [])
@@ -250,6 +255,11 @@ class SelfSubjectRulesReviewCheck(BaseCheck):
                     if r != "*":
                         wildcard_resources.append(r)
             for r in resources:
+                if r in self.READ_DANGEROUS_RESOURCES:
+                    matched = verbs & (self.READ_VERBS | self.WRITE_VERBS)
+                    if matched:
+                        nodes_proxy_access.append(r)
+                        nodes_proxy_verbs |= matched
                 if r in self.HIGHLY_SENSITIVE_RESOURCES:
                     if verbs & self.WRITE_VERBS:
                         sensitive_writes.append(r)
@@ -257,6 +267,72 @@ class SelfSubjectRulesReviewCheck(BaseCheck):
                         can_read_secrets = True
                     if r in ("pods", "pods/exec") and (verbs & {"create", "*"}):
                         can_create_pods = True
+                    if r == "pods/ephemeralcontainers" and (verbs & {"create", "update", "*"}):
+                        ephemeral_writes.append(r)
+
+        if nodes_proxy_access:
+            unique_resources = sorted(set(nodes_proxy_access))
+            findings.append(Finding(
+                id="EW-K8S-006",
+                title=(
+                    f"Service account has GET on {', '.join(unique_resources)} "
+                    "— this is RCE, not read-only"
+                ),
+                severity=Severity.CRITICAL,
+                confidence=Confidence.HIGH,
+                category=Category.KUBERNETES,
+                evidence=(
+                    f"Verbs {sorted(nodes_proxy_verbs)} on {unique_resources} "
+                    f"in namespace '{namespace}'"
+                ),
+                why_it_matters=(
+                    "nodes/proxy proxies requests directly to the Kubelet API. "
+                    "The Kubelet supports WebSocket exec endpoints over HTTP GET, "
+                    "meaning `get` permission here allows running arbitrary commands "
+                    "in any pod on the node — bypassing Kubernetes audit logging and "
+                    "admission control entirely."
+                ),
+                remediation=(
+                    "Remove get/list/watch on nodes/proxy and nodes/log from this SA's "
+                    "Role. Use the Kubernetes exec API (pods/exec) with audit logging "
+                    "instead of direct Kubelet proxy access."
+                ),
+                references=[
+                    "https://horizon3.ai/attack-research/when-read-only-isnt-k8s-nodes-proxy-get-to-rce/",
+                    "https://www.stream.security/post/invisible-kubernetes-rec-why-nodes-proxy-get-is-more-dangerous-than-you-think",
+                ],
+            ))
+
+        if ephemeral_writes:
+            findings.append(Finding(
+                id="EW-K8S-008",
+                title="Service account can write pods/ephemeralcontainers",
+                severity=Severity.HIGH,
+                confidence=Confidence.HIGH,
+                category=Category.KUBERNETES,
+                evidence=(
+                    f"create/update on 'pods/ephemeralcontainers' allowed in "
+                    f"namespace '{namespace}'"
+                ),
+                why_it_matters=(
+                    "pods/ephemeralcontainers write permission allows injecting an "
+                    "ephemeral debug container into any running pod in the namespace. "
+                    "Ephemeral containers share the target pod's PID, network, and IPC "
+                    "namespaces, allowing an attacker to inspect and interact with all "
+                    "processes in the target pod, read its memory, exfiltrate secrets, "
+                    "and inject malicious code into the running application — equivalent "
+                    "to RCE in the target pod without creating any new pods that might "
+                    "trigger alerts."
+                ),
+                remediation=(
+                    "Remove create/update on pods/ephemeralcontainers from this SA "
+                    "unless the SA is exclusively used for debugging workflows with "
+                    "human oversight."
+                ),
+                references=[
+                    "https://kubernetes.io/docs/concepts/workloads/pods/ephemeral-containers/",
+                ],
+            ))
 
         if wildcard_all:
             findings.append(Finding(
@@ -448,3 +524,214 @@ class SelfSubjectRulesReviewCheck(BaseCheck):
                 return json.loads(resp.read())
         except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError):
             return None
+
+
+@register_check
+class AdmissionWebhookFailurePolicyCheck(BaseCheck):
+    """Audit admission webhook failurePolicy and namespace exclusions."""
+
+    name = "k8s-admission-webhook-failurepolicy"
+    description = "Audits admission webhook failurePolicy and selectors"
+    category = Category.KUBERNETES
+
+    def run(self) -> list[Finding]:
+        findings: list[Finding] = []
+
+        token = self._read_file(SA_TOKEN_PATH)
+        if not token:
+            return findings
+        token = token.strip()
+
+        api_host = os.environ.get("KUBERNETES_SERVICE_HOST")
+        api_port = os.environ.get("KUBERNETES_SERVICE_PORT", "443")
+        if not api_host:
+            return findings
+
+        try:
+            if self._path_exists(SA_CA_PATH):
+                ctx = ssl.create_default_context(cafile=SA_CA_PATH)
+            else:
+                ctx = ssl.create_default_context()
+        except (OSError, ssl.SSLError):
+            return findings
+
+        endpoints = [
+            ("ValidatingWebhookConfiguration",
+             f"https://{api_host}:{api_port}/apis/admissionregistration.k8s.io/v1/validatingwebhookconfigurations"),
+            ("MutatingWebhookConfiguration",
+             f"https://{api_host}:{api_port}/apis/admissionregistration.k8s.io/v1/mutatingwebhookconfigurations"),
+        ]
+
+        for kind, url in endpoints:
+            data = self._get_json(url, token, ctx)
+            if not data:
+                continue
+            items = data.get("items", []) if isinstance(data, dict) else []
+            for cfg in items:
+                if not isinstance(cfg, dict):
+                    continue
+                cfg_name = (cfg.get("metadata", {}) or {}).get("name", "unknown")
+                webhooks = cfg.get("webhooks", []) or []
+                for hook in webhooks:
+                    if not isinstance(hook, dict):
+                        continue
+                    hook_name = hook.get("name", "unknown")
+                    failure_policy = hook.get("failurePolicy", "Fail")
+                    ns_selector = hook.get("namespaceSelector", {}) or {}
+                    obj_selector = hook.get("objectSelector", {}) or {}
+
+                    if failure_policy == "Ignore":
+                        findings.append(Finding(
+                            id="EW-K8S-007",
+                            title=(
+                                f"{kind} '{cfg_name}' webhook '{hook_name}' "
+                                "has failurePolicy=Ignore"
+                            ),
+                            severity=Severity.HIGH,
+                            confidence=Confidence.HIGH,
+                            category=Category.KUBERNETES,
+                            evidence=(
+                                f"{kind} '{cfg_name}' webhook '{hook_name}' has "
+                                "failurePolicy=Ignore. If the webhook pod is deleted "
+                                "or unreachable, ALL pod creation requests are "
+                                "admitted without policy enforcement."
+                            ),
+                            why_it_matters=(
+                                "Admission webhooks are the primary runtime "
+                                "enforcement point for Pod Security policies "
+                                "(OPA/Gatekeeper, Kyverno, Kube-webhook-certmanager). "
+                                "failurePolicy=Ignore means that if the webhook pod is "
+                                "unavailable — due to a restart, OOM kill, or "
+                                "deliberate deletion by an attacker with pod-delete "
+                                "rights — all admission requests are approved without "
+                                "policy checks. This allows deployment of privileged "
+                                "pods, hostPath mounts, and containers running as root, "
+                                "bypassing all policy guardrails."
+                            ),
+                            remediation=(
+                                "Set failurePolicy: Fail for all security-relevant "
+                                "admission webhooks. Ensure webhook pods have "
+                                "PodDisruptionBudgets and are replicated."
+                            ),
+                            references=[
+                                "https://aquilax.ai/blog/kubernetes-admission-controller-escape",
+                                "https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/",
+                            ],
+                        ))
+
+                    if self._excludes_kube_system(ns_selector):
+                        findings.append(Finding(
+                            id="EW-K8S-007",
+                            title=(
+                                f"{kind} '{cfg_name}' webhook '{hook_name}' "
+                                "excludes namespace 'kube-system'"
+                            ),
+                            severity=Severity.HIGH,
+                            confidence=Confidence.HIGH,
+                            category=Category.KUBERNETES,
+                            evidence=(
+                                f"{kind} '{cfg_name}' webhook '{hook_name}' "
+                                "excludes namespace 'kube-system' via "
+                                "namespaceSelector. Privileged pods can be "
+                                "deployed in kube-system to bypass admission "
+                                "policies."
+                            ),
+                            why_it_matters=(
+                                "Excluding kube-system from a security-enforcing "
+                                "webhook is dangerous because kube-system pods "
+                                "run with host-level privileges. Any principal "
+                                "with pod-create rights in kube-system can "
+                                "deploy a privileged pod that bypasses all "
+                                "policy checks."
+                            ),
+                            remediation=(
+                                "Remove the kube-system exclusion from the "
+                                "namespaceSelector for security-enforcing "
+                                "webhooks. Use ClusterRoleBinding scoping to "
+                                "restrict pod-create rights in kube-system."
+                            ),
+                            references=[
+                                "https://aquilax.ai/blog/kubernetes-admission-controller-escape",
+                            ],
+                        ))
+
+                    if obj_selector and self._excludes_nodes_or_system(obj_selector):
+                        findings.append(Finding(
+                            id="EW-K8S-007",
+                            title=(
+                                f"{kind} '{cfg_name}' webhook '{hook_name}' "
+                                "objectSelector may exclude system objects"
+                            ),
+                            severity=Severity.MEDIUM,
+                            confidence=Confidence.MEDIUM,
+                            category=Category.KUBERNETES,
+                            evidence=(
+                                f"{kind} '{cfg_name}' webhook '{hook_name}' "
+                                f"objectSelector: {obj_selector}"
+                            ),
+                            why_it_matters=(
+                                "objectSelector matchExpressions excluding "
+                                "system or node objects may allow privileged "
+                                "workloads to bypass admission policy checks."
+                            ),
+                            remediation=(
+                                "Audit the objectSelector to ensure no critical "
+                                "system objects are excluded from policy enforcement."
+                            ),
+                            references=[
+                                "https://kubernetes.io/docs/reference/access-authn-authz/extensible-admission-controllers/",
+                            ],
+                        ))
+
+        return findings
+
+    def _get_json(self, url: str, token: str, ctx: ssl.SSLContext) -> dict | None:
+        req = urllib.request.Request(
+            url,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
+            },
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=5, context=ctx) as resp:
+                if resp.status != 200:
+                    return None
+                return json.loads(resp.read())
+        except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError):
+            return None
+
+    @staticmethod
+    def _excludes_kube_system(ns_selector: dict) -> bool:
+        match_expressions = ns_selector.get("matchExpressions", []) or []
+        for expr in match_expressions:
+            if not isinstance(expr, dict):
+                continue
+            if expr.get("key") != "kubernetes.io/metadata.name":
+                continue
+            op = expr.get("operator", "")
+            values = expr.get("values", []) or []
+            if op == "NotIn" and "kube-system" in values:
+                return True
+        match_labels = ns_selector.get("matchLabels", {}) or {}
+        if isinstance(match_labels, dict):
+            name = match_labels.get("kubernetes.io/metadata.name")
+            if name and name != "kube-system":
+                # An equality selector that excludes kube-system implicitly.
+                return False
+        return False
+
+    @staticmethod
+    def _excludes_nodes_or_system(obj_selector: dict) -> bool:
+        match_expressions = obj_selector.get("matchExpressions", []) or []
+        for expr in match_expressions:
+            if not isinstance(expr, dict):
+                continue
+            op = expr.get("operator", "")
+            values = expr.get("values", []) or []
+            if op == "NotIn":
+                for v in values:
+                    if isinstance(v, str) and ("node" in v.lower() or "system" in v.lower()):
+                        return True
+        return False
