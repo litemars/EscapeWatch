@@ -90,9 +90,9 @@ class UnixSocketDiscoveryCheck(BaseCheck):
             if not matched:
                 other_sockets.append(sock_path)
 
-        for sock_path, runtime_name, severity in runtime_sockets:
+        for idx, (sock_path, runtime_name, severity) in enumerate(runtime_sockets, start=1):
             findings.append(Finding(
-                id="EW-SOCK-001",
+                id=f"EW-SOCK-001.{idx}",
                 title=f"{runtime_name} socket found: {sock_path}",
                 severity=severity,
                 confidence=Confidence.HIGH,

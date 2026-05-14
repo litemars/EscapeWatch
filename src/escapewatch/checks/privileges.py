@@ -32,6 +32,15 @@ DANGEROUS_CAPS = {
 CRITICAL_CAPS = {"cap_sys_admin", "cap_sys_module", "cap_sys_rawio", "cap_sys_ptrace"}
 
 
+def _read_cap_last_cap() -> int:
+    """Return the kernel's CAP_LAST_CAP, falling back to 40 (Linux 6.3)."""
+    try:
+        with open("/proc/sys/kernel/cap_last_cap", "r") as f:
+            return int(f.read().strip())
+    except (OSError, ValueError):
+        return 40
+
+
 def parse_cap_hex(hex_str: str) -> set[str]:
     """Convert a hex capability bitmask to a set of capability names."""
     cap_names = [
@@ -84,7 +93,8 @@ class PrivilegedContainerCheck(BaseCheck):
                 except ValueError:
                     eff_val = 0
 
-                all_cap_bits = (1 << 41) - 1  # bits 0-40
+                last_cap = _read_cap_last_cap()
+                all_cap_bits = (1 << (last_cap + 1)) - 1
                 if eff_val & all_cap_bits == all_cap_bits:
                     findings.append(Finding(
                         id="EW-PRIV-001",

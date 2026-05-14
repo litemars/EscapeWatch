@@ -210,8 +210,10 @@ class AssessmentResult:
         return "F"
 
     def to_dict(self) -> dict[str, Any]:
+        from escapewatch import __version__
+
         return {
-            "version": "0.1.0",
+            "version": __version__,
             "environment": self.environment.to_dict(),
             "summary": {
                 "total_score": self.total_score,
