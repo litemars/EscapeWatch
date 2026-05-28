@@ -9,14 +9,17 @@ EscapeWatch is a security assessment tool that detects container escape paths, d
 ## Features
 
 - **Environment Detection** — Automatically identifies Docker containers, Kubernetes pods, containerd workloads, and host systems
-- **20+ Security Checks** across 7 categories:
+- **47 Security Checks** across 10 categories:
   - Runtime privileges (capabilities, seccomp, AppArmor, SELinux)
   - Filesystem and mounts (runtime sockets, host paths, writable cgroups)
-  - Namespace isolation (hostPID, hostNetwork, hostIPC)
-  - Kubernetes (service account tokens, API reachability, kubeconfig)
-  - Cloud metadata endpoint exposure
+  - Namespace isolation (hostPID, hostNetwork, hostIPC, UTS, user namespaces)
+  - Kubernetes (service account tokens, RBAC, API reachability, admission webhooks)
+  - Cloud metadata endpoint exposure and IMDSv1/v2 detection
   - Secrets in environment variables and process environments
   - Runtime socket and dangerous port discovery
+  - **Runtime version fingerprinting** — runc, containerd, CRI-O, BuildKit CVEs (EW-RT-*)
+  - **Kernel vulnerability detection** — DirtyPipe, GameOver(lay), io_uring UAF, eBPF (EW-KERN-*)
+  - **Attack chain detection** — composite multi-condition escape paths (EW-CHAIN-*)
 - **Risk Scoring** — Weighted severity/confidence scoring with letter grades (A–F)
 - **Multiple Output Formats** — Rich terminal, compact, JSON, SARIF v2.1.0
 - **CI/CD Integration** — Non-interactive mode with configurable failure thresholds
@@ -96,11 +99,14 @@ Exit codes:
 |---|---|---|
 | Runtime Privileges | `EW-PRIV-*` | Capabilities, seccomp, AppArmor, SELinux, root user |
 | Filesystem & Mounts | `EW-FS-*` | Docker sockets, host mounts, writable cgroups, devices |
-| Namespaces | `EW-NS-*` | hostPID, hostNetwork, hostIPC indicators |
-| Kubernetes | `EW-K8S-*` | Service account tokens, API access, kubeconfig |
-| Cloud & Metadata | `EW-CLOUD-*` | Cloud metadata endpoint reachability |
+| Namespaces | `EW-NS-*` | hostPID, hostNetwork, hostIPC, UTS, user namespace remapping |
+| Kubernetes | `EW-K8S-*` | Service account tokens, RBAC, API access, admission webhooks |
+| Cloud & Metadata | `EW-CLOUD-*` | Cloud metadata reachability, IMDSv1/v2 detection |
 | Secrets Exposure | `EW-SECRET-*` | Environment variables, mounted secrets, /proc/environ |
-| Runtime Sockets | `EW-SOCK-*` | UNIX sockets, dangerous management ports |
+| Runtime Sockets | `EW-SOCK-*` | UNIX sockets, abstract sockets, dangerous management ports |
+| Runtime Versions | `EW-RT-*` | runc, containerd, CRI-O, BuildKit CVE fingerprinting |
+| Kernel Vulnerabilities | `EW-KERN-*` | DirtyPipe, GameOver(lay), io_uring UAF, unprivileged eBPF |
+| Attack Chains | `EW-CHAIN-*` | Multi-condition composite escape path detection |
 
 See [docs/checks.md](docs/checks.md) for detailed check descriptions.
 

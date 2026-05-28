@@ -29,7 +29,10 @@ DANGEROUS_CAPS = {
 }
 
 # Subset that are especially critical
-CRITICAL_CAPS = {"cap_sys_admin", "cap_sys_module", "cap_sys_rawio", "cap_sys_ptrace"}
+CRITICAL_CAPS = {
+    "cap_sys_admin", "cap_sys_module", "cap_sys_rawio", "cap_sys_ptrace",
+    "cap_dac_read_search", "cap_bpf",
+}
 
 
 def _read_cap_last_cap() -> int:
@@ -154,6 +157,73 @@ class PrivilegedContainerCheck(BaseCheck):
                                 "https://man7.org/linux/man-pages/man7/capabilities.7.html",
                             ],
                         ))
+
+            capeff_hex = match.group(1).strip()
+            if "cap_dac_read_search" in caps:
+                findings.append(Finding(
+                    id="EW-PRIV-011",
+                    title="CAP_DAC_READ_SEARCH — Shocker open_by_handle_at escape vector",
+                    severity=Severity.HIGH,
+                    confidence=Confidence.HIGH,
+                    category=Category.PRIVILEGES,
+                    evidence=f"cap_dac_read_search in CapEff ({capeff_hex})",
+                    why_it_matters=(
+                        "CAP_DAC_READ_SEARCH bypasses file read-permission and "
+                        "directory search-permission checks across mount namespaces. "
+                        "Combined with the open_by_handle_at(2) syscall (the Shocker "
+                        "technique), an attacker can open any file on the host "
+                        "filesystem by raw inode number without traversing the "
+                        "container's chroot or mount namespace. This gives a "
+                        "full read (and often write) primitive over host files — "
+                        "/etc/shadow, /root/.ssh/id_rsa, kubeconfig, cloud credentials "
+                        "— without CAP_SYS_ADMIN or any kernel exploit. Shocker was "
+                        "the first documented container escape via capabilities alone "
+                        "(2014) and remains exploitable on unpatched configurations."
+                    ),
+                    remediation=(
+                        "Drop CAP_DAC_READ_SEARCH with --cap-drop CAP_DAC_READ_SEARCH. "
+                        "Block open_by_handle_at via seccomp (it is denied by the "
+                        "default Docker seccomp profile). Never grant this capability "
+                        "to untrusted workloads."
+                    ),
+                    references=[
+                        "https://tbhaxor.com/container-breakout-part-2/",
+                        "https://man7.org/linux/man-pages/man2/open_by_handle_at.2.html",
+                    ],
+                ))
+            if "cap_bpf" in caps:
+                findings.append(Finding(
+                    id="EW-PRIV-012",
+                    title="CAP_BPF — eBPF verifier bug container escape vector",
+                    severity=Severity.HIGH,
+                    confidence=Confidence.MEDIUM,
+                    category=Category.PRIVILEGES,
+                    evidence=f"cap_bpf in CapEff ({capeff_hex})",
+                    why_it_matters=(
+                        "CAP_BPF (introduced in Linux 5.8) grants the ability to load "
+                        "eBPF programs without CAP_SYS_ADMIN. The eBPF verifier "
+                        "validates programs before execution, but has a history of "
+                        "exploitable bugs: pointer arithmetic confusion, register "
+                        "type confusion, and speculative execution side-channels have "
+                        "all enabled privilege escalation to kernel code execution "
+                        "from CAP_BPF alone. Additionally, CAP_BPF permits loading "
+                        "socket-filter programs that can intercept host network "
+                        "traffic and — via bpf_probe_write_user() in certain helper "
+                        "contexts — write to host process memory. As eBPF adoption "
+                        "grows across observability and networking stacks, the "
+                        "verifier attack surface continues to expand."
+                    ),
+                    remediation=(
+                        "Drop CAP_BPF unless strictly required. Block the bpf() "
+                        "syscall via seccomp. Set "
+                        "kernel.unprivileged_bpf_disabled=2 on the host. Keep "
+                        "the host kernel patched and monitor eBPF verifier CVEs."
+                    ),
+                    references=[
+                        "https://www.kernel.org/doc/html/latest/admin-guide/sysctl/kernel.html#unprivileged-bpf-disabled",
+                        "https://www.graplsecurity.com/post/kernel-pwning-with-ebpf-a-love-story",
+                    ],
+                ))
 
             amb_match = re.search(r"CapAmb:\s+([0-9a-fA-F]+)", status)
             if amb_match:

@@ -293,8 +293,7 @@ class UnprivilegedBPFCheck(BaseCheck):
                 why_it_matters=(
                     "eBPF is restricted to processes with CAP_BPF or "
                     "CAP_SYS_ADMIN. Note that CAP_BPF alone is still dangerous "
-                    "in containers — cross-reference with EW-PRIV-002 / "
-                    "EW-PRIV-003 capability findings."
+                    "in containers — cross-reference with EW-PRIV-012 findings."
                 ),
                 remediation=(
                     "Consider setting unprivileged_bpf_disabled=2 to fully "
@@ -304,5 +303,80 @@ class UnprivilegedBPFCheck(BaseCheck):
                     "https://www.kernel.org/doc/html/latest/admin-guide/sysctl/kernel.html#unprivileged-bpf-disabled",
                 ],
             ))
+
+        return findings
+
+
+@register_check
+class IoUringUAFCheck(_KernelBase):
+    """Detect kernels vulnerable to io_uring use-after-free (CVE-2023-6817 / CVE-2024-0582)."""
+
+    name = "kernel-io-uring-uaf"
+    description = "Checks for kernel vulnerable to io_uring UAF (CVE-2023-6817 / CVE-2024-0582)"
+    category = Category.KERNEL
+
+    def run(self) -> list[Finding]:
+        findings: list[Finding] = []
+
+        version_str = self._kernel_version_string()
+        parsed = _parse_kernel_version(version_str)
+
+        if parsed is None:
+            return findings
+
+        maj, minor, patch = parsed
+
+        # CVE-2023-6817: io_uring UAF, fixed in 6.6.3.
+        # CVE-2024-0582: io_uring buffer-ring UAF, affects 6.4.0–6.6.13, fixed in 6.6.14.
+        # Combined vulnerable range: 6.4.0 <= kernel < 6.6.14.
+        vulnerable = False
+        if maj == 6:
+            if minor in (4, 5):
+                vulnerable = True
+            elif minor == 6 and patch < 14:
+                vulnerable = True
+
+        if not vulnerable:
+            return findings
+
+        findings.append(Finding(
+            id="EW-KERN-004",
+            title=f"Kernel {version_str} vulnerable to io_uring UAF (CVE-2023-6817 / CVE-2024-0582)",
+            severity=Severity.HIGH,
+            confidence=Confidence.HIGH,
+            category=Category.KERNEL,
+            evidence=(
+                f"Kernel {version_str} — vulnerable to io_uring use-after-free. "
+                "CVE-2023-6817 fixed in 6.6.3; CVE-2024-0582 fixed in 6.6.14."
+            ),
+            why_it_matters=(
+                "Two use-after-free vulnerabilities in the io_uring subsystem affect "
+                "kernels 6.4 through 6.6.13. CVE-2023-6817: a UAF in io_uring's "
+                "registered-buffer management allows an unprivileged local process "
+                "to read and write freed kernel memory, enabling privilege escalation "
+                "to root. CVE-2024-0582: a UAF in the io_uring buffer-ring "
+                "implementation (IORING_REGISTER_PBUF_RING) allows an attacker to "
+                "corrupt kernel heap structures and achieve kernel code execution. "
+                "Both are exploitable without any special capabilities from within "
+                "a container that has access to the io_uring syscall, and public "
+                "proof-of-concept exploits exist for CVE-2024-0582. A successful "
+                "exploit grants the container process root on the host kernel, "
+                "defeating all namespace and capability isolation."
+            ),
+            remediation=(
+                "Upgrade the host kernel to >= 6.6.14 or >= 6.7. On Ubuntu: "
+                "`apt-get update && apt-get upgrade linux-image-generic`. "
+                "On RHEL 9: `dnf update kernel`. As a temporary mitigation, "
+                "block the io_uring syscall via seccomp "
+                "(add SCMP_SYS(io_uring_setup), io_uring_enter, io_uring_register "
+                "to the deny list). Docker's default seccomp profile blocks "
+                "io_uring — ensure it is not disabled with --security-opt seccomp=unconfined."
+            ),
+            references=[
+                "https://www.cvedetails.com/cve/CVE-2023-6817/",
+                "https://www.cvedetails.com/cve/CVE-2024-0582/",
+                "https://github.com/ysanatomic/io_uring_LPE-CVE-2024-0582",
+            ],
+        ))
 
         return findings
