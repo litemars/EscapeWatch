@@ -603,3 +603,179 @@ class BuildKitVersionCheck(BaseCheck):
             ))
 
         return findings
+
+
+@register_check
+class RuncCVE20195736Check(BaseCheck):
+    """runc < 1.0.0-rc7 — CVE-2019-5736 (/proc/self/exe overwrite breakout)."""
+
+    name = "runc-cve-2019-5736"
+    description = "Checks for runc < 1.0.0-rc7 (CVE-2019-5736)"
+    category = Category.RUNTIME
+
+    def run(self) -> list[Finding]:
+        findings: list[Finding] = []
+
+        version, binary_path = _read_runtime_version(["runc"])
+        if not binary_path and not version:
+            return findings
+
+        parsed = _parse_semver(version) if version else None
+
+        if parsed is not None:
+            # Fixed in runc 1.0.0-rc7 (released 2019-02-12).
+            # In our semver tuple: rc=7 → (1, 0, 0, 7); stable → (1, 0, 0, 0).
+            # Stable 1.0.0 was released long after rc7, so _ver_lt(stable, rc7)
+            # is False — only genuine pre-rc7 versions are flagged.
+            vulnerable = _ver_lt(parsed, (1, 0, 0, 7))
+            if not vulnerable:
+                return findings
+            findings.append(Finding(
+                id="EW-RT-006",
+                title=f"runc {version} vulnerable to CVE-2019-5736 (/proc/self/exe overwrite)",
+                severity=Severity.CRITICAL,
+                confidence=Confidence.HIGH,
+                category=Category.RUNTIME,
+                evidence=(
+                    f"runc version {version} — vulnerable to CVE-2019-5736 "
+                    "(fixed in runc 1.0.0-rc7, Docker 18.09.2)"
+                ),
+                why_it_matters=(
+                    "CVE-2019-5736 (CVSS 8.6) allows a malicious container to "
+                    "overwrite the runc binary on the host, achieving arbitrary "
+                    "code execution as root on the host node. The attack exploits "
+                    "a race between container process startup and runc's access to "
+                    "/proc/self/exe (which points to the runc binary itself while "
+                    "it executes inside the container namespace). A container "
+                    "process can repeatedly open /proc/self/exe for writing and "
+                    "win the race to replace the runc binary with a payload before "
+                    "runc exits. The next `docker exec` or container start on any "
+                    "container on the host will then execute the attacker's binary "
+                    "as root on the host. This vulnerability requires only the "
+                    "ability to run a container with a custom entrypoint — no "
+                    "special runtime privileges are needed."
+                ),
+                remediation=(
+                    "Upgrade runc to >= 1.0.0-rc7. For Docker: upgrade to "
+                    ">= 18.09.2. This vulnerability is historical but any runc "
+                    "binary predating rc7 on a production host is critically "
+                    "exposed and must be replaced immediately."
+                ),
+                references=[
+                    "https://unit42.paloaltonetworks.com/breaking-docker-via-runc-explaining-cve-2019-5736/",
+                    "https://nvd.nist.gov/vuln/detail/CVE-2019-5736",
+                ],
+            ))
+        elif binary_path:
+            findings.append(Finding(
+                id="EW-RT-006",
+                title="runc detected but version unreadable (cannot rule out CVE-2019-5736)",
+                severity=Severity.MEDIUM,
+                confidence=Confidence.LOW,
+                category=Category.RUNTIME,
+                evidence=(
+                    f"runc binary at {binary_path} — version could not be read. "
+                    "Cannot rule out CVE-2019-5736 (/proc/self/exe overwrite)."
+                ),
+                why_it_matters=(
+                    "runc versions before 1.0.0-rc7 are vulnerable to "
+                    "CVE-2019-5736, which allows container-to-host binary "
+                    "overwrite. Verify the runc version manually."
+                ),
+                remediation=(
+                    "Run `runc --version` to confirm the version and upgrade "
+                    "to >= 1.0.0-rc7 / Docker >= 18.09.2 if needed."
+                ),
+                references=[
+                    "https://nvd.nist.gov/vuln/detail/CVE-2019-5736",
+                ],
+            ))
+
+        return findings
+
+
+@register_check
+class RuncCVE202130465Check(BaseCheck):
+    """runc < 1.0.1 — CVE-2021-30465 (symlink-exchange mount attack)."""
+
+    name = "runc-cve-2021-30465"
+    description = "Checks for runc < 1.0.1 (CVE-2021-30465)"
+    category = Category.RUNTIME
+
+    def run(self) -> list[Finding]:
+        findings: list[Finding] = []
+
+        version, binary_path = _read_runtime_version(["runc"])
+        if not binary_path and not version:
+            return findings
+
+        parsed = _parse_semver(version) if version else None
+
+        if parsed is not None:
+            # Fixed in runc 1.0.1 (released 2021-05-05).
+            # Stable 1.0.0 (rc=0 → (1,0,0,0)) is < (1,0,1,0) → vulnerable.
+            # All rc releases are also < (1,0,1,0).
+            vulnerable = _ver_lt(parsed, (1, 0, 1, 0))
+            if not vulnerable:
+                return findings
+            findings.append(Finding(
+                id="EW-RT-007",
+                title=f"runc {version} vulnerable to CVE-2021-30465 (symlink-exchange mount)",
+                severity=Severity.HIGH,
+                confidence=Confidence.HIGH,
+                category=Category.RUNTIME,
+                evidence=(
+                    f"runc version {version} — vulnerable to CVE-2021-30465 "
+                    "(fixed in runc 1.0.1)"
+                ),
+                why_it_matters=(
+                    "CVE-2021-30465 (CVSS 8.2) exploits a TOCTOU race in runc's "
+                    "volume mount handling. When runc binds a host directory into "
+                    "a container, it resolves the host path at validation time and "
+                    "uses it at mount time — with a window between the two. A "
+                    "malicious container image can repeatedly swap a directory with "
+                    "a symlink pointing to a sensitive host path (e.g. /etc, "
+                    "/var/lib/kubelet) and win the race, causing runc to "
+                    "bind-mount the symlink target instead of the intended "
+                    "directory. The container then gains read/write access to "
+                    "arbitrary host directories. This can be used to read host "
+                    "credentials, overwrite host binaries, or plant backdoors. "
+                    "Exploitation requires only the ability to start a container "
+                    "with a bind-mount — no special capabilities are needed."
+                ),
+                remediation=(
+                    "Upgrade runc to >= 1.0.1. For Docker: upgrade to >= 20.10.6. "
+                    "Audit all containers using bind mounts of directories that "
+                    "could be swapped with symlinks before the upgrade."
+                ),
+                references=[
+                    "https://github.com/opencontainers/runc/security/advisories/GHSA-c3xm-pvg7-gh7r",
+                    "https://nvd.nist.gov/vuln/detail/CVE-2021-30465",
+                ],
+            ))
+        elif binary_path:
+            findings.append(Finding(
+                id="EW-RT-007",
+                title="runc detected but version unreadable (cannot rule out CVE-2021-30465)",
+                severity=Severity.MEDIUM,
+                confidence=Confidence.LOW,
+                category=Category.RUNTIME,
+                evidence=(
+                    f"runc binary at {binary_path} — version could not be read. "
+                    "Cannot rule out CVE-2021-30465 (symlink-exchange mount attack)."
+                ),
+                why_it_matters=(
+                    "runc < 1.0.1 is vulnerable to CVE-2021-30465, a TOCTOU race "
+                    "in bind-mount handling that allows reading/writing arbitrary "
+                    "host directories. Verify the runc version manually."
+                ),
+                remediation=(
+                    "Run `runc --version` to confirm the version and upgrade "
+                    "to >= 1.0.1 / Docker >= 20.10.6 if needed."
+                ),
+                references=[
+                    "https://nvd.nist.gov/vuln/detail/CVE-2021-30465",
+                ],
+            ))
+
+        return findings
