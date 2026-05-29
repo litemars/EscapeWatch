@@ -109,6 +109,13 @@ This document describes every security check in EscapeWatch, organized by catego
 - **Impact:** Writable core_pattern or modprobe can be used for arbitrary code execution on the host
 - **Remediation:** Ensure `/proc/sys` is mounted read-only
 
+### EW-FS-012: Unsafe sysctl Value
+- **Severity:** HIGH / MEDIUM (per entry)
+- **Confidence:** HIGH
+- **What it checks:** Dangerous *values* of kernel sysctls readable from the container: `unprivileged_bpf_disabled=0`, `perf_event_paranoid=-1`, `kptr_restrict=0`
+- **Impact:** Unsafe values enable unprivileged eBPF kernel attacks, Spectre-class side channels, and KASLR bypass for kernel ROP
+- **Remediation:** Set safer values via `sysctl`, persist in `/etc/sysctl.conf`, and reload
+
 ### EW-FS-006: Root Filesystem Writable
 - **Severity:** LOW
 - **Confidence:** HIGH
@@ -202,6 +209,7 @@ This document describes every security check in EscapeWatch, organized by catego
 ### EW-K8S-005: SelfSubjectRulesReview — Effective RBAC
 - **Severity:** CRITICAL (cluster-admin equivalent) / HIGH (secret read, pod create, sensitive writes) / MEDIUM (wildcard verbs) / INFO (no findings)
 - **Confidence:** HIGH (concrete privilege flags) / MEDIUM (wildcard heuristic)
+- **Finding IDs:** Distinct privileges that can co-occur are reported under dedicated IDs so each is independently triageable in SARIF: `EW-K8S-005` (cluster-admin equivalent / INFO summary), `EW-K8S-005-SECRETS-READ`, `EW-K8S-005-PODS-CREATE`, `EW-K8S-005-SENSITIVE-WRITE`, `EW-K8S-005-WILDCARD-VERBS`
 - **What it checks:** The actual effective RBAC of the mounted service account
 - **How it works:** When a SA token, CA cert, and `KUBERNETES_SERVICE_HOST` are present, POSTs a `SelfSubjectRulesReview` to `/apis/authorization.k8s.io/v1/selfsubjectrulesreview` using the SA bearer token (validated against the SA CA cert). Parses the returned `resourceRules` and flags wildcard verbs/resources, secret read access, pod-create rights, and write access to RBAC objects (`secrets`, `pods`, `pods/exec`, `clusterrolebindings`, `roles`, `serviceaccounts`, `nodes`, …)
 - **Impact:** Overpermissive service accounts are the single most exploited entry vector after a pod compromise (Palo Alto Unit 42 — *Modern Kubernetes Threats*, T1528 + T1098.006). Cluster-admin equivalence trivializes full cluster takeover; secret read enables credential harvest and lateral movement; pod-create is functionally equivalent to node compromise unless Pod Security Admission blocks it

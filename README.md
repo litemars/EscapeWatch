@@ -9,14 +9,17 @@ EscapeWatch is a security assessment tool that detects container escape paths, d
 ## Features
 
 - **Environment Detection** — Automatically identifies Docker containers, Kubernetes pods, containerd workloads, and host systems
-- **20+ Security Checks** across 7 categories:
-  - Runtime privileges (capabilities, seccomp, AppArmor, SELinux)
-  - Filesystem and mounts (runtime sockets, host paths, writable cgroups)
-  - Namespace isolation (hostPID, hostNetwork, hostIPC)
-  - Kubernetes (service account tokens, API reachability, kubeconfig)
-  - Cloud metadata endpoint exposure
-  - Secrets in environment variables and process environments
-  - Runtime socket and dangerous port discovery
+- **40+ Security Checks** across 10 categories:
+  - Runtime privileges (capabilities, ambient caps, seccomp, AppArmor, SELinux, no_new_privs, root user)
+  - Filesystem and mounts (runtime sockets, host paths, writable cgroups, `/proc/*/mem`, release_agent, SUID bind-mounts, unsafe sysctls)
+  - Namespace isolation (hostPID, hostNetwork, hostIPC, hostUTS, user-namespace remapping)
+  - Kubernetes (service account tokens, API reachability, kubeconfig, effective RBAC, admission-webhook policy)
+  - Cloud metadata endpoint exposure (incl. AWS IMDSv1/v2 detection)
+  - Secrets in environment variables, mounted secret files, and process environments
+  - Runtime socket and dangerous port discovery (incl. abstract sockets)
+  - Container runtime CVEs (runc, containerd, CRI-O, BuildKit)
+  - Kernel vulnerabilities (Dirty Pipe, GameOver(lay), unprivileged eBPF)
+  - Attack chains (correlated multi-condition escape paths)
 - **Risk Scoring** — Weighted severity/confidence scoring with letter grades (A–F)
 - **Multiple Output Formats** — Rich terminal, compact, JSON, SARIF v2.1.0
 - **CI/CD Integration** — Non-interactive mode with configurable failure thresholds
@@ -98,9 +101,12 @@ Exit codes:
 | Filesystem & Mounts | `EW-FS-*` | Docker sockets, host mounts, writable cgroups, devices |
 | Namespaces | `EW-NS-*` | hostPID, hostNetwork, hostIPC indicators |
 | Kubernetes | `EW-K8S-*` | Service account tokens, API access, kubeconfig |
-| Cloud & Metadata | `EW-CLOUD-*` | Cloud metadata endpoint reachability |
+| Cloud & Metadata | `EW-CLOUD-*` | Cloud metadata endpoint reachability, AWS IMDSv1/v2 |
 | Secrets Exposure | `EW-SECRET-*` | Environment variables, mounted secrets, /proc/environ |
-| Runtime Sockets | `EW-SOCK-*` | UNIX sockets, dangerous management ports |
+| Runtime Sockets | `EW-SOCK-*` | UNIX sockets, dangerous management ports, abstract sockets |
+| Runtime Versions | `EW-RT-*` | Container runtime CVEs (runc, containerd, CRI-O, BuildKit) |
+| Kernel Vulnerabilities | `EW-KERN-*` | Dirty Pipe, GameOver(lay), unprivileged eBPF |
+| Attack Chains | `EW-CHAIN-*` | Correlated multi-condition escape paths |
 
 See [docs/checks.md](docs/checks.md) for detailed check descriptions.
 
