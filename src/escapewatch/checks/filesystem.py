@@ -355,7 +355,7 @@ class ProcSysWriteCheck(BaseCheck):
             if current_value != info["dangerous_value"]:
                 continue
             findings.append(Finding(
-                id="EW-FS-005",
+                id="EW-FS-012",
                 title=f"Unsafe sysctl value: {path} = {current_value}",
                 severity=info["severity"],
                 confidence=Confidence.HIGH,

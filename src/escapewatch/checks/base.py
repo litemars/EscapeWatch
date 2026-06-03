@@ -70,7 +70,51 @@ class BaseCheck(abc.ABC):
             return False
 
     def _is_writable(self, path: str) -> bool:
-        """Check if a path is writable without modifying it."""
+        """Check if a path is writable without modifying it.
+
+        os.access(W_OK) checks DAC permissions against the real UID, but UID 0
+        bypasses DAC entirely — so as root it returns True for almost any path
+        regardless of its mode, producing false-positive "writable" findings.
+        For root, the only thing that actually gates a write is whether the
+        backing mount is read-only, so we consult the mount flags instead.
+        """
         import os
 
-        return os.access(path, os.W_OK)
+        if os.geteuid() != 0:
+            return os.access(path, os.W_OK)
+
+        ro = self._is_on_readonly_mount(path)
+        if ro is None:
+            # Could not determine the backing mount — fall back to os.access.
+            return os.access(path, os.W_OK)
+        return not ro
+
+    def _is_on_readonly_mount(self, path: str) -> bool | None:
+        """Return True/False if `path`'s backing mount is read-only, else None.
+
+        Resolves the longest mountpoint in /proc/mounts that is a prefix of
+        `path` and inspects its mount options for the `ro` flag. Returns None
+        when /proc/mounts is unavailable or no mountpoint matches.
+        """
+        import os
+
+        mounts = self._read_file("/proc/mounts")
+        if not mounts:
+            return None
+
+        resolved = os.path.realpath(path)
+        best_mp = ""
+        best_ro: bool | None = None
+        for line in mounts.splitlines():
+            parts = line.split()
+            if len(parts) < 4:
+                continue
+            mountpoint = parts[1]
+            options = parts[3].split(",")
+            if resolved == mountpoint or resolved.startswith(
+                mountpoint.rstrip("/") + "/"
+            ) or mountpoint == "/":
+                if len(mountpoint) >= len(best_mp):
+                    best_mp = mountpoint
+                    best_ro = "ro" in options
+        return best_ro

@@ -364,7 +364,7 @@ class SelfSubjectRulesReviewCheck(BaseCheck):
         else:
             if can_read_secrets:
                 findings.append(Finding(
-                    id="EW-K8S-005",
+                    id="EW-K8S-005-SECRETS-READ",
                     title="Service account can read Kubernetes secrets",
                     severity=Severity.HIGH,
                     confidence=Confidence.HIGH,
@@ -388,7 +388,7 @@ class SelfSubjectRulesReviewCheck(BaseCheck):
                 ))
             if can_create_pods:
                 findings.append(Finding(
-                    id="EW-K8S-005",
+                    id="EW-K8S-005-PODS-CREATE",
                     title="Service account can create pods (privilege escalation primitive)",
                     severity=Severity.HIGH,
                     confidence=Confidence.HIGH,
@@ -413,7 +413,7 @@ class SelfSubjectRulesReviewCheck(BaseCheck):
             if sensitive_writes:
                 unique = sorted(set(sensitive_writes))
                 findings.append(Finding(
-                    id="EW-K8S-005",
+                    id="EW-K8S-005-SENSITIVE-WRITE",
                     title=f"Service account can write sensitive resources: {', '.join(unique)}",
                     severity=Severity.HIGH,
                     confidence=Confidence.MEDIUM,
@@ -440,7 +440,7 @@ class SelfSubjectRulesReviewCheck(BaseCheck):
             if wildcard_resources:
                 unique = sorted(set(wildcard_resources))
                 findings.append(Finding(
-                    id="EW-K8S-005",
+                    id="EW-K8S-005-WILDCARD-VERBS",
                     title=f"Service account has wildcard verbs on resources: {', '.join(unique[:5])}",
                     severity=Severity.MEDIUM,
                     confidence=Confidence.MEDIUM,
@@ -582,7 +582,7 @@ class AdmissionWebhookFailurePolicyCheck(BaseCheck):
 
                     if failure_policy == "Ignore":
                         findings.append(Finding(
-                            id="EW-K8S-007",
+                            id="EW-K8S-007-FAILUREPOLICY-IGNORE",
                             title=(
                                 f"{kind} '{cfg_name}' webhook '{hook_name}' "
                                 "has failurePolicy=Ignore"
@@ -621,7 +621,7 @@ class AdmissionWebhookFailurePolicyCheck(BaseCheck):
 
                     if self._excludes_kube_system(ns_selector):
                         findings.append(Finding(
-                            id="EW-K8S-007",
+                            id="EW-K8S-007-NS-EXCLUDE-KUBE-SYSTEM",
                             title=(
                                 f"{kind} '{cfg_name}' webhook '{hook_name}' "
                                 "excludes namespace 'kube-system'"
@@ -657,7 +657,7 @@ class AdmissionWebhookFailurePolicyCheck(BaseCheck):
 
                     if obj_selector and self._excludes_nodes_or_system(obj_selector):
                         findings.append(Finding(
-                            id="EW-K8S-007",
+                            id="EW-K8S-007-OBJECTSELECTOR-EXCLUDE",
                             title=(
                                 f"{kind} '{cfg_name}' webhook '{hook_name}' "
                                 "objectSelector may exclude system objects"
